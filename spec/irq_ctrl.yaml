@@ -1,0 +1,31 @@
+# Register block spec: irq_ctrl
+# This is the SINGLE SOURCE OF TRUTH for this block.
+# All RTL, firmware headers, and documentation are generated from this file.
+#
+# Real tools that consume specs like this: PeakRDL, Semifore, Agnisys, Synopsys Register Compiler.
+# They typically use SystemRDL syntax; we use YAML here for readability while learning.
+
+block: irq_ctrl           # Name of the register block → becomes the RTL module name
+base_addr: 0x40001000     # Base address in the chip's memory map (hex)
+reg_width: 32             # All registers are 32 bits wide
+
+registers:
+  - name: CTRL
+    offset: 0x00          # Byte offset from base_addr (software writes to base_addr + 0x00)
+    desc: "Control register — enables and configures the interrupt controller"
+    fields:
+      # bits: "0"   → single bit at position 0
+      # bits: "2:1" → two-bit field occupying bits 2 down to 1 (MSB:LSB notation)
+      - { name: ENABLE,  bits: "0",   access: rw, reset: 0, desc: "Global interrupt enable (1=enabled)" }
+      - { name: MODE,    bits: "2:1", access: rw, reset: 0, desc: "Operating mode (00=level, 01=edge, 10=pulse)" }
+      - { name: PRIORITY, bits: "5:3", access: rw, reset: 0, desc: "Interrupt priority level (0=lowest, 7=highest)" }
+
+  - name: STATUS
+    offset: 0x04          # Next register is 4 bytes away (one 32-bit word)
+    desc: "Status register — reflects current hardware state (read-only to software)"
+    fields:
+      # access: ro → software can only READ this; hardware WRITES it
+      # This models a status signal driven by HW logic into the register
+      - { name: BUSY, bits: "0",   access: ro, reset: 0, desc: "Hardware busy flag (1=busy, set by HW)" }
+      - { name: IRQ,  bits: "1",   access: ro, reset: 0, desc: "Interrupt pending flag (1=interrupt active, set by HW)" }
+      - { name: ERR,  bits: "2",   access: ro, reset: 0, desc: "Error flag (1=error detected, set by HW)" }

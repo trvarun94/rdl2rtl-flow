@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+*.swp
+*.swo
+
+# Temp outputs (consistency checker uses this)
+.tmp_gen/
+
+# gen/ is intentionally committed — it's the checked-in baseline for consistency gating
