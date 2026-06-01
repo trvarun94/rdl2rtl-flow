@@ -452,6 +452,113 @@ def generate_rtl(spec):
 
 
 # ---------------------------------------------------------------------------
+# Register-map documentation generation (Markdown)
+# ---------------------------------------------------------------------------
+
+def generate_docs(spec):
+    """
+    Generate a Markdown register-map document from the parsed spec dict.
+    Returns the document as a string.
+
+    DOCUMENTATION CONCEPT — Why generate the register map?
+    In real chip development, the register map is the contract between hardware
+    and software. It lives in the Programmer's Reference Manual (PRM) and is the
+    document firmware engineers, verification engineers, and customers all read.
+
+    Generating it from the same YAML spec that drives RTL and firmware headers
+    guarantees the three artifacts never diverge — a bit position change in the
+    spec propagates everywhere at once. Writing it by hand and keeping it in sync
+    is a known source of bugs in real projects.
+
+    Real tools (Arm regtool, IP-XACT exporters, Synopsys Register Compiler) emit
+    HTML, PDF, and even UVM register models from the same source. We emit Markdown
+    because it renders for free on GitHub and stays readable as plain text.
+
+    Output structure:
+      - File header: block name, base address, register/field counts
+      - Register summary table: one row per register (offset + description)
+      - Per-register section (##): one field table listing bits, access, reset, desc
+    """
+    block     = spec["block"]
+    base_addr = spec["base_addr"]
+    registers = spec["registers"]
+
+    base_str  = hex(base_addr) if isinstance(base_addr, int) else base_addr
+    field_count = sum(len(r["fields"]) for r in registers)
+    sorted_regs = sorted(registers, key=offset_int_of)
+
+    lines = []
+
+    # ------------------------------------------------------------------
+    # File header
+    # ------------------------------------------------------------------
+    lines += [
+        f"# {block} Register Map",
+        f"",
+        f"_Generated from `spec/{block}.yaml` — do not edit by hand._",
+        f"",
+        f"| Property | Value |",
+        f"|----------|-------|",
+        f"| Base address | `{base_str}` |",
+        f"| Register width | 32 bits |",
+        f"| Registers | {len(registers)} |",
+        f"| Fields | {field_count} |",
+        f"",
+        f"---",
+        f"",
+    ]
+
+    # ------------------------------------------------------------------
+    # Register summary table
+    # ------------------------------------------------------------------
+    lines += [
+        f"## Register Summary",
+        f"",
+        f"| Register | Offset | Description |",
+        f"|----------|--------|-------------|",
+    ]
+    for reg in sorted_regs:
+        off  = offset_int_of(reg)
+        desc = reg.get("desc", "")
+        lines.append(f"| `{reg['name']}` | `0x{off:02X}` | {desc} |")
+
+    lines += ["", "---", ""]
+
+    # ------------------------------------------------------------------
+    # Per-register sections
+    # ------------------------------------------------------------------
+    for reg in sorted_regs:
+        off  = offset_int_of(reg)
+        desc = reg.get("desc", "")
+
+        lines += [
+            f"## {reg['name']} — Offset `0x{off:02X}`",
+            f"",
+        ]
+        if desc:
+            lines += [desc, ""]
+
+        lines += [
+            f"| Field | Bits | Access | Reset | Description |",
+            f"|-------|------|--------|-------|-------------|",
+        ]
+        for field in reg["fields"]:
+            msb, lsb = parse_bits(field["bits"])
+            bits_str = f"{msb}:{lsb}" if msb != lsb else str(lsb)
+            reset    = field.get("reset", 0)
+            w        = field_width(msb, lsb)
+            reset_str = f"`0x{reset:0{(w + 3) // 4}X}`"
+            fdesc    = field.get("desc", "")
+            lines.append(
+                f"| `{field['name']}` | {bits_str} | `{field['access']}` | {reset_str} | {fdesc} |"
+            )
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # C firmware header generation
 # ---------------------------------------------------------------------------
 
@@ -696,7 +803,13 @@ def main():
         outputs_written.append(header_path)
 
     if args.output in ("docs", "all"):
-        print("[reggen] Docs generation not yet implemented (Phase 3)")
+        docs_dir = os.path.join(args.outdir, "docs")
+        os.makedirs(docs_dir, exist_ok=True)
+        docs_path = os.path.join(docs_dir, f"{spec['block']}.md")
+        with open(docs_path, "w") as f:
+            f.write(generate_docs(spec))
+        print(f"[reggen] Docs written  → {docs_path}")
+        outputs_written.append(docs_path)
 
     manifest_path = write_manifest(spec, args.outdir, outputs_written)
     print(f"[reggen] Manifest    → {manifest_path}")
