@@ -1,0 +1,9 @@
+{
+  "tool": "reggen_validator",
+  "spec": "/Users/rajturaga/raj_projects/fe_flow/rdl2rtl_flow/spec/irq_ctrl.yaml",
+  "status": "PASS",
+  "error_count": 0,
+  "warning_count": 0,
+  "errors": [],
+  "warnings": []
+}

@@ -19,6 +19,7 @@
 # Procs (commands) exposed:
 #   read_spec   <path>        — load the register spec (YAML)
 #   set_output_dir <path>     — set where generated files go
+#   validate_spec             — lint the spec (Phase 1)
 #   generate_rtl              — generate the SystemVerilog APB block
 #   generate_header           — generate the C firmware header (Phase 2)
 #   generate_docs             — generate register-map documentation (Phase 3)
@@ -107,6 +108,41 @@ proc _run_engine {output_type} {
     # It spreads the list elements as individual arguments to exec.
     set output [exec {*}$cmd]
     puts $output
+}
+
+# ---------------------------------------------------------------------------
+# proc validate_spec — Phase 1
+# ---------------------------------------------------------------------------
+# LEARNING NOTE: This is the TCL "command" the designer types in a real flow.
+#   It mirrors how Synopsys DC exposes `check_design` or Cadence Genus exposes
+#   `check_design -all`. Under the hood we shell out to a Python script that
+#   does the actual work. If the validator exits non-zero, TCL's `exec` raises
+#   an error automatically — so generation stops on validator failure.
+proc validate_spec {} {
+    global _reggen_spec_path _reggen_output_dir _reggen_tool_dir
+
+    if {$_reggen_spec_path eq ""} {
+        error "validate_spec: no spec loaded — call read_spec first"
+    }
+    if {$_reggen_output_dir eq ""} {
+        error "validate_spec: no output dir set — call set_output_dir first"
+    }
+
+    set validator [file join $_reggen_tool_dir "reggen_validator.py"]
+    set cmd [list python3 $validator \
+                 --spec   $_reggen_spec_path \
+                 --outdir $_reggen_output_dir]
+
+    puts "\[reggen\] Validating spec..."
+    # LEARNING NOTE: We tee the validator's stderr through to our stderr so the
+    # designer sees per-error lines, not just the final PASS/FAIL summary.
+    # `exec` will raise (non-zero exit) on validator failure — which is exactly
+    # what we want for gating.
+    if {[catch {exec {*}$cmd >@ stdout 2>@ stderr} err_msg]} {
+        # Re-raise so the calling script (and make) sees a failure
+        error "validate_spec: validator reported errors (see above)"
+    }
+    puts "\[reggen\] Validation complete."
 }
 
 # ---------------------------------------------------------------------------

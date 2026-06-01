@@ -56,13 +56,18 @@ read_spec [file join $project_root "spec/irq_ctrl.yaml"]
 set_output_dir [file join $project_root "gen"]
 
 # Step 3: Generate the requested output(s)
+# LEARNING NOTE — Phase 1 added `validate` here. In a real flow you'd also
+# call validate_spec at the top of the "all" path to gate generation behind
+# linting; we instead let the Makefile orchestrate that ordering (see Makefile
+# "all" target). Both approaches are valid.
 switch $output_type {
-    "rtl"    { generate_rtl    }
-    "header" { generate_header }
-    "docs"   { generate_docs   }
-    "all"    { generate_rtl; generate_header; generate_docs }
-    default  {
-        error "Unknown output type: $output_type. Use rtl, header, docs, or all."
+    "validate" { validate_spec  }
+    "rtl"      { generate_rtl    }
+    "header"   { generate_header }
+    "docs"     { generate_docs   }
+    "all"      { validate_spec; generate_rtl; generate_header; generate_docs }
+    default    {
+        error "Unknown output type: $output_type. Use validate, rtl, header, docs, or all."
     }
 }
 

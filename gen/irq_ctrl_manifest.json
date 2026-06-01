@@ -2,9 +2,7 @@
   "tool": "reggen",
   "block": "irq_ctrl",
   "spec_base_addr": "0x40001000",
-  "register_count": 2,
-  "field_count": 6,
-  "outputs": [
-    "/Users/rajturaga/raj_projects/fe_flow/rdl2rtl_flow/gen/rtl/irq_ctrl.sv"
-  ]
+  "register_count": 5,
+  "field_count": 12,
+  "outputs": []
 }

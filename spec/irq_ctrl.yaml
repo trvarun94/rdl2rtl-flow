@@ -29,3 +29,35 @@ registers:
       - { name: BUSY, bits: "0",   access: ro, reset: 0, desc: "Hardware busy flag (1=busy, set by HW)" }
       - { name: IRQ,  bits: "1",   access: ro, reset: 0, desc: "Interrupt pending flag (1=interrupt active, set by HW)" }
       - { name: ERR,  bits: "2",   access: ro, reset: 0, desc: "Error flag (1=error detected, set by HW)" }
+
+  - name: IRQ_STS
+    offset: 0x08
+    desc: "Interrupt status register — HW sets bits when IRQs fire; SW writes 1 to clear (acknowledge)"
+    fields:
+      # access: w1c → Write-1-to-Clear.
+      # Hardware sets the bit (via a dedicated _set input port in the RTL).
+      # Software reads to see which IRQs are pending, then writes 1 to the handled bits to clear them.
+      # This is how ARM GIC, RISC-V PLIC, and virtually every real IRQ controller works.
+      - { name: IRQ0_PEND, bits: "0", access: w1c, reset: 0, desc: "IRQ channel 0 pending (HW sets; SW writes 1 to ack)" }
+      - { name: IRQ1_PEND, bits: "1", access: w1c, reset: 0, desc: "IRQ channel 1 pending (HW sets; SW writes 1 to ack)" }
+      - { name: IRQ2_PEND, bits: "2", access: w1c, reset: 0, desc: "IRQ channel 2 pending (HW sets; SW writes 1 to ack)" }
+
+  - name: TRIG
+    offset: 0x0C
+    desc: "Software trigger register — write to fire a soft interrupt; readback is always 0"
+    fields:
+      # access: wo → Write-Only.
+      # A write pulses the trigger into the HW logic. Reading back would return stale/meaningless
+      # state, so the RTL hardwires PRDATA to 0 for this field on reads.
+      - { name: SOFT_IRQ, bits: "0", access: wo, reset: 0, desc: "Write 1 to assert a software interrupt (pulse)" }
+      - { name: SOFT_NMI, bits: "1", access: wo, reset: 0, desc: "Write 1 to assert a software NMI (non-maskable interrupt)" }
+
+  - name: FIFO_STS
+    offset: 0x10
+    desc: "FIFO status register — reports pending event count; reading clears the count (read-to-clear)"
+    fields:
+      # access: rclr → Read-to-Clear.
+      # Reading this field returns its current value AND simultaneously resets it to 0.
+      # Models a saturating event counter: HW increments it on each event; SW reads (and clears)
+      # to drain the count. Common in UART FIFOs and hardware event loggers.
+      - { name: EVT_COUNT, bits: "3:0", access: rclr, reset: 0, desc: "Pending event count (0-15); clears to 0 on read" }

@@ -92,14 +92,18 @@ docs:
 	@echo "[make] Done. See $(GEN_DIR)/docs/"
 
 # ---------------------------------------------------------------------------
-# make validate — lint the register spec (implemented in Phase 1)
+# make validate — lint the register spec (Phase 1)
+# LEARNING NOTE: Like `make rtl`, this calls tclsh with the run script. The
+#   TCL `validate_spec` command shells out to reggen_validator.py. If the
+#   validator finds errors, tclsh exits non-zero and Make aborts the build —
+#   the `all` target uses this to gate generation on a clean spec.
 # ---------------------------------------------------------------------------
 
 .PHONY: validate
 validate:
 	@echo "[make] Running spec validation..."
-	@echo "[make] Validation not yet implemented (Phase 1)"
-	@exit 0
+	$(TCLSH) $(RUN_SCRIPT) --output validate
+	@echo "[make] Done. See $(GEN_DIR)/validation_report.json"
 
 # ---------------------------------------------------------------------------
 # make check — consistency gate (implemented in Phase 4)
@@ -112,14 +116,16 @@ check:
 	@exit 0
 
 # ---------------------------------------------------------------------------
-# make all — full flow: generate everything + validate + check
+# make all — full flow: validate first, then generate, then check
 # LEARNING NOTE: A target can depend on other targets.
-#   "all: rtl header docs validate check" means Make runs each of those
-#   in order before considering "all" done.
+#   The order here is intentional: VALIDATE comes first so a broken spec
+#   stops the build before we waste time generating RTL/headers/docs from
+#   a flawed source. Make stops on the first non-zero exit code, so the
+#   gate is automatic.
 # ---------------------------------------------------------------------------
 
 .PHONY: all
-all: rtl header docs validate check
+all: validate rtl header docs check
 	@echo "[make] Full flow complete."
 
 # ---------------------------------------------------------------------------
@@ -137,4 +143,5 @@ clean:
 	-rm -rf $(GEN_DIR)/include
 	-rm -rf $(GEN_DIR)/docs
 	-rm -f  $(GEN_DIR)/*_manifest.json
+	-rm -f  $(GEN_DIR)/validation_report.json
 	@echo "[make] Clean complete."

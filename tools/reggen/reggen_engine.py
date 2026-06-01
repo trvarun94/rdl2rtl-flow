@@ -59,6 +59,15 @@ def field_width(msb, lsb):
 # RTL generation: APB register block
 # ---------------------------------------------------------------------------
 
+STORABLE = ("rw", "wo", "w1c", "rclr")  # access types that need a storage flop
+
+
+def offset_int_of(reg):
+    """Get the register offset as a Python int (specs may use hex string or int)."""
+    o = reg["offset"]
+    return int(o, 16) if isinstance(o, str) else o
+
+
 def generate_rtl(spec):
     """
     Generate a SystemVerilog APB register block from the parsed spec dict.
@@ -70,16 +79,30 @@ def generate_rtl(spec):
         Phase 2 (ACCESS): manager asserts PENABLE; subordinate responds
       We always drive PREADY=1 (zero-wait-state response).
 
-    GENERATED STRUCTURE:
-      1. Module header + APB port list
-      2. One storage flip-flop per rw field (ro fields are HW input ports)
-      3. Write logic: on rising clock, if PSEL & PENABLE & PWRITE, decode address
-         and write PWDATA bits into the right field storage flops
-      4. Read mux: combinatorially drive PRDATA based on PADDR
+    ACCESS TYPES SUPPORTED:
+      rw   — SW read/write; storage flop; HW reads value.
+      ro   — SW read-only; HW input port drives PRDATA directly (no flop).
+      wo   — SW write-only; storage flop; readback is hardwired 0;
+             flop value is exposed on an output port so HW can see it.
+      w1c  — HW sets via _set strobe; SW writes 1 to bits to clear them.
+             Used for interrupt-pending registers (ARM GIC, RISC-V PLIC).
+      rclr — HW loads via _en/value ports; SW reads return current value
+             AND clear the flop to 0 next cycle.
+
+    PRIORITY WITHIN one clock (last non-blocking write wins):
+      (1) APB write  →  (2) APB read-clear (rclr)  →  (3) HW set (w1c)  →  (4) HW load (rclr)
+      HW ports come last so a HW event in the same cycle as a SW
+      ack/read is NEVER lost (no missed interrupts).
     """
     block     = spec["block"]
     base_addr = spec["base_addr"]
     registers = spec["registers"]
+
+    # Flat list of (reg, field) tuples grouped by access type — used many times below.
+    by_access = {a: [] for a in ("rw", "ro", "wo", "w1c", "rclr")}
+    for reg in registers:
+        for field in reg["fields"]:
+            by_access[field["access"]].append((reg, field))
 
     lines = []
 
@@ -100,6 +123,8 @@ def generate_rtl(spec):
         f"// APB is the simplest AMBA bus — used for low-bandwidth control/status",
         f"// registers. The CPU writes/reads registers over APB; hardware logic",
         f"// uses the register values to control behavior.",
+        f"//",
+        f"// Access types in this block: rw, ro, wo, w1c, rclr",
         f"// ============================================================",
         f"",
         f"`timescale 1ns/1ps",
@@ -107,7 +132,7 @@ def generate_rtl(spec):
     ]
 
     # ------------------------------------------------------------------
-    # Module declaration + APB ports
+    # Module declaration + port list
     # ------------------------------------------------------------------
     # LEARNING NOTE: 'logic' is the SystemVerilog type for all signals.
     # Cleaner than old Verilog's wire/reg distinction.
@@ -118,7 +143,7 @@ def generate_rtl(spec):
 
     # Each entry is (declaration, comment).  Comment may be "".
     port_entries = [
-        ("    // APB subordinate interface",                  ""),  # heading row, no comma needed
+        ("    // APB subordinate interface",                  ""),  # heading row, no comma
         ("    input  logic        PCLK",                       "Clock — registers update on rising edge"),
         ("    input  logic        PRESETn",                    "Active-low reset — 0 means reset asserted"),
         ("    input  logic [31:0] PADDR",                      "Byte address from the APB manager (CPU)"),
@@ -130,28 +155,59 @@ def generate_rtl(spec):
         ("    output logic        PREADY",                     "We're ready (tied 1 = zero wait states)"),
     ]
 
-    # Hardware input ports for 'ro' fields
-    # LEARNING NOTE: ro fields are driven INTO the register FROM hardware logic
-    # (e.g., a state machine elsewhere in the chip sets BUSY=1 when it's running).
-    # Software can only read them — it cannot write them.
-    for reg in registers:
-        for field in reg["fields"]:
-            if field["access"] == "ro":
-                msb, lsb = parse_bits(field["bits"])
-                width = field_width(msb, lsb)
-                port_name = f"hw_{reg['name']}_{field['name']}"
-                w = f"[{width-1}:0] " if width > 1 else "       "
-                port_entries.append(
-                    (f"    input  logic {w}{port_name}",
-                     f"HW-driven: {reg['name']}.{field['name']}")
-                )
+    # HW ports per access type — see ACCESS TYPES doc above.
+    if any(by_access[a] for a in ("ro", "wo", "w1c", "rclr")):
+        port_entries.append(("    // Hardware-interface ports (per access type)", ""))
 
-    # Render: comma after every real port EXCEPT the last; heading rows get no comma.
+    def width_pad(width):
+        return f"[{width-1}:0] " if width > 1 else "       "
+
+    # ro: input port (HW drives value into the register block)
+    for reg, field in by_access["ro"]:
+        msb, lsb = parse_bits(field["bits"])
+        w = width_pad(field_width(msb, lsb))
+        name = f"hw_{reg['name']}_{field['name']}"
+        port_entries.append(
+            (f"    input  logic {w}{name}",
+             f"ro:  HW drives {reg['name']}.{field['name']} (SW reads it)")
+        )
+    # wo: output port (expose the SW-written flop value to HW)
+    for reg, field in by_access["wo"]:
+        msb, lsb = parse_bits(field["bits"])
+        w = width_pad(field_width(msb, lsb))
+        name = f"hw_{reg['name']}_{field['name']}"
+        port_entries.append(
+            (f"    output logic {w}{name}",
+             f"wo:  HW observes SW-written {reg['name']}.{field['name']} (SW readback is 0)")
+        )
+    # w1c: HW _set strobe (sets the sticky bit; SW writes 1 to clear)
+    for reg, field in by_access["w1c"]:
+        set_name = f"hw_{reg['name']}_{field['name']}_set"
+        port_entries.append(
+            (f"    input  logic        {set_name}",
+             f"w1c: HW pulse to SET {reg['name']}.{field['name']} (SW writes 1 to clear)")
+        )
+    # rclr: HW _en strobe + HW value (load into flop; SW read clears it)
+    for reg, field in by_access["rclr"]:
+        msb, lsb = parse_bits(field["bits"])
+        w = width_pad(field_width(msb, lsb))
+        val_name = f"hw_{reg['name']}_{field['name']}"
+        en_name  = f"hw_{reg['name']}_{field['name']}_en"
+        port_entries.append(
+            (f"    input  logic {w}{val_name}",
+             f"rclr:HW load value for {reg['name']}.{field['name']}")
+        )
+        port_entries.append(
+            (f"    input  logic        {en_name}",
+             f"rclr:HW load enable strobe (clears on SW read)")
+        )
+
+    # Render module header + ports. Heading rows have no comma; last real port has no comma.
     lines.append(f"module {block} (")
-
-    # Find the index of the last entry that is a real port (not a heading/blank).
-    last_port_idx = max(i for i, (d, _) in enumerate(port_entries) if d.lstrip().startswith(("input", "output", "inout")))
-
+    last_port_idx = max(
+        i for i, (d, _) in enumerate(port_entries)
+        if d.lstrip().startswith(("input", "output", "inout"))
+    )
     for i, (decl, comment) in enumerate(port_entries):
         is_heading = not decl.lstrip().startswith(("input", "output", "inout"))
         if is_heading:
@@ -172,83 +228,176 @@ def generate_rtl(spec):
     ]
 
     # ------------------------------------------------------------------
-    # Storage flip-flops for rw fields
+    # Storage flip-flops (rw, wo, w1c, rclr)
     # ------------------------------------------------------------------
-    # LEARNING NOTE: Only rw fields need storage flip-flops.
-    # ro fields are just wires connected to hardware input ports above.
     lines += [
         f"    // --------------------------------------------------------",
-        f"    // Storage flip-flops — one per rw field",
-        f"    // Hold the value software last wrote. Hardware reads these",
-        f"    // to know what software requested.",
+        f"    // Storage flip-flops — one per rw/wo/w1c/rclr field",
+        f"    //   rw   : holds SW-written value (HW reads it)",
+        f"    //   wo   : holds SW-written value (exposed as output port; readback=0)",
+        f"    //   w1c  : sticky bit set by HW, cleared by SW write-1",
+        f"    //   rclr : holds HW-loaded value; auto-clears on SW read",
+        f"    // ro fields have NO flop — they are wires from the HW input port.",
         f"    // --------------------------------------------------------",
     ]
     for reg in registers:
         for field in reg["fields"]:
-            if field["access"] == "rw":
+            if field["access"] in STORABLE:
                 msb, lsb = parse_bits(field["bits"])
                 width = field_width(msb, lsb)
-                sig_name = f"r_{reg['name']}_{field['name']}"
-                w = f"[{width-1}:0] " if width > 1 else "       "
+                sig = f"r_{reg['name']}_{field['name']}"
+                w = width_pad(width)
                 lines.append(
-                    f"    logic {w}{sig_name};"
-                    f"  // {reg['name']}.{field['name']} ({width}-bit rw)"
+                    f"    logic {w}{sig};"
+                    f"  // {reg['name']}.{field['name']} ({width}-bit {field['access']})"
                 )
-
     lines.append("")
 
     # ------------------------------------------------------------------
-    # Write logic (sequential — clocked)
+    # wo: assign output port = storage flop value
     # ------------------------------------------------------------------
-    # LEARNING NOTE: always_ff is the SystemVerilog idiom for flip-flop logic.
-    # @(posedge PCLK) = "trigger on every rising clock edge."
-    # PRESETn is active-low: PRESETn==0 means reset is asserted.
+    if by_access["wo"]:
+        lines += [
+            f"    // wo fields: expose the SW-written value to HW via output port.",
+            f"    // HW can detect a pulse on this signal to trigger an action.",
+        ]
+        for reg, field in by_access["wo"]:
+            sig  = f"r_{reg['name']}_{field['name']}"
+            port = f"hw_{reg['name']}_{field['name']}"
+            lines.append(f"    assign {port} = {sig};")
+        lines.append("")
+
+    # ------------------------------------------------------------------
+    # Sequential logic — all flop updates in priority order
+    # ------------------------------------------------------------------
     lines += [
         f"    // --------------------------------------------------------",
-        f"    // Write logic — triggered on APB write: PSEL & PENABLE & PWRITE",
-        f"    // Decode PADDR[7:0] to find which register, then store PWDATA",
-        f"    // bits into the matching field flip-flops.",
+        f"    // Sequential logic — all flop updates",
+        f"    //",
+        f"    // PRIORITY within one clock (last NBA assignment wins in always_ff):",
+        f"    //   (1) APB write    — rw/wo store PWDATA; w1c write-1-clears",
+        f"    //   (2) APB read     — rclr clears the flop                ",
+        f"    //   (3) HW _set      — w1c HW-set strobe (overrides SW ack)",
+        f"    //   (4) HW _en       — rclr HW load     (overrides read-clear)",
+        f"    // HW comes last → HW events never lost when racing with SW.",
         f"    // --------------------------------------------------------",
         f"    always_ff @(posedge PCLK or negedge PRESETn) begin",
         f"        if (!PRESETn) begin",
-        f"            // On reset: drive every rw field to its configured reset value",
+        f"            // Reset: drive every storable flop to its spec'd reset value",
     ]
-
     for reg in registers:
         for field in reg["fields"]:
-            if field["access"] == "rw":
+            if field["access"] in STORABLE:
                 msb, lsb = parse_bits(field["bits"])
                 width = field_width(msb, lsb)
-                reset_val = field.get("reset", 0)
-                sig_name = f"r_{reg['name']}_{field['name']}"
-                lines.append(f"            {sig_name} <= {width}'d{reset_val};")
+                rval = field.get("reset", 0)
+                sig  = f"r_{reg['name']}_{field['name']}"
+                lines.append(f"            {sig} <= {width}'d{rval};")
+    lines.append(f"        end else begin")
 
-    lines += [
-        f"        end else if (PSEL && PENABLE && PWRITE) begin",
-        f"            // APB write: decode address offset, update matching fields.",
-        f"            // PADDR[7:0] gives the register offset within this block.",
-        f"            case (PADDR[7:0])",
+    # ---- (1) APB write phase: rw, wo, w1c ----
+    apb_writable = [
+        (reg, [f for f in reg["fields"] if f["access"] in ("rw", "wo", "w1c")])
+        for reg in registers
     ]
-
-    for reg in registers:
-        offset = reg["offset"]
-        offset_int = int(offset, 16) if isinstance(offset, str) else offset
-        rw_fields = [f for f in reg["fields"] if f["access"] == "rw"]
-        if rw_fields:
-            lines.append(f"                8'h{offset_int:02X}: begin  // {reg['name']}")
-            for field in rw_fields:
+    apb_writable = [(r, fs) for (r, fs) in apb_writable if fs]
+    if apb_writable:
+        lines += [
+            f"            // (1) APB write phase ----------------------------------",
+            f"            if (PSEL && PENABLE && PWRITE) begin",
+            f"                case (PADDR[7:0])",
+        ]
+        for reg, fields in apb_writable:
+            lines.append(f"                    8'h{offset_int_of(reg):02X}: begin  // {reg['name']}")
+            for field in fields:
                 msb, lsb = parse_bits(field["bits"])
-                sig_name = f"r_{reg['name']}_{field['name']}"
+                sig = f"r_{reg['name']}_{field['name']}"
                 slice_expr = f"PWDATA[{msb}:{lsb}]" if msb != lsb else f"PWDATA[{lsb}]"
+                if field["access"] in ("rw", "wo"):
+                    lines.append(
+                        f"                        {sig} <= {slice_expr};"
+                        f"  // {field['access']}: store PWDATA bits [{msb}:{lsb}]"
+                    )
+                else:  # w1c
+                    # Write-1-to-clear: only clear bits where SW writes 1.
+                    # For a 1-bit field this is a simple `if (PWDATA[lsb]) sig <= 0`.
+                    # For multi-bit w1c fields, mask each bit individually.
+                    bit_expr = f"PWDATA[{lsb}]" if msb == lsb else f"|{slice_expr}"
+                    if msb == lsb:
+                        lines.append(
+                            f"                        if ({bit_expr}) {sig} <= 1'b0;"
+                            f"  // w1c: SW writes 1 → clear"
+                        )
+                    else:
+                        # multi-bit w1c: bitwise clear (sig &= ~PWDATA[msb:lsb])
+                        w_bits = field_width(msb, lsb)
+                        lines.append(
+                            f"                        {sig} <= {sig} & ~{slice_expr};"
+                            f"  // w1c: clear bits where SW wrote 1 ({w_bits}-bit)"
+                        )
+            lines.append(f"                    end")
+        lines += [
+            f"                    default: ;  // unknown offset — write ignored",
+            f"                endcase",
+            f"            end",
+        ]
+
+    # ---- (2) APB read phase: rclr clear ----
+    rclr_by_reg = [
+        (reg, [f for f in reg["fields"] if f["access"] == "rclr"])
+        for reg in registers
+    ]
+    rclr_by_reg = [(r, fs) for (r, fs) in rclr_by_reg if fs]
+    if rclr_by_reg:
+        lines += [
+            f"            // (2) APB read phase — rclr clears on read ------------",
+            f"            // The clear is registered: it takes effect on the clock",
+            f"            // edge AFTER the read, so the read still returns the old",
+            f"            // value (via the combinational read mux below).",
+            f"            if (PSEL && PENABLE && !PWRITE) begin",
+            f"                case (PADDR[7:0])",
+        ]
+        for reg, fields in rclr_by_reg:
+            lines.append(f"                    8'h{offset_int_of(reg):02X}: begin  // {reg['name']}")
+            for field in fields:
+                msb, lsb = parse_bits(field["bits"])
+                width = field_width(msb, lsb)
+                sig = f"r_{reg['name']}_{field['name']}"
                 lines.append(
-                    f"                    {sig_name} <= {slice_expr};"
-                    f"  // {field['name']}, bits [{msb}:{lsb}]"
+                    f"                        {sig} <= {width}'d0;"
+                    f"  // rclr: clear on read"
                 )
-            lines.append(f"                end")
+            lines.append(f"                    end")
+        lines += [
+            f"                    default: ;",
+            f"                endcase",
+            f"            end",
+        ]
+
+    # ---- (3) HW _set strobes (w1c) — override SW ack ----
+    if by_access["w1c"]:
+        lines.append(f"            // (3) HW _set strobes — w1c HW-set wins over SW ack")
+        for reg, field in by_access["w1c"]:
+            sig = f"r_{reg['name']}_{field['name']}"
+            set_port = f"hw_{reg['name']}_{field['name']}_set"
+            lines.append(
+                f"            if ({set_port}) {sig} <= 1'b1;"
+                f"  // HW sets {reg['name']}.{field['name']}"
+            )
+
+    # ---- (4) HW load strobes (rclr) — override read-clear ----
+    if by_access["rclr"]:
+        lines.append(f"            // (4) HW _en strobes — rclr HW load wins over read-clear")
+        for reg, field in by_access["rclr"]:
+            sig = f"r_{reg['name']}_{field['name']}"
+            en_port  = f"hw_{reg['name']}_{field['name']}_en"
+            val_port = f"hw_{reg['name']}_{field['name']}"
+            lines.append(
+                f"            if ({en_port}) {sig} <= {val_port};"
+                f"  // HW loads {reg['name']}.{field['name']}"
+            )
 
     lines += [
-        f"                default: ;  // write to unknown offset — silently ignored",
-        f"            endcase",
         f"        end",
         f"    end",
         f"",
@@ -257,36 +406,39 @@ def generate_rtl(spec):
     # ------------------------------------------------------------------
     # Read mux (combinational)
     # ------------------------------------------------------------------
-    # LEARNING NOTE: always_comb = combinational logic (no clock, no flops).
-    # PRDATA updates immediately whenever PADDR or field values change.
-    # We reconstruct the full 32-bit register by OR-ing each field into
-    # its correct bit position within the word.
     lines += [
         f"    // --------------------------------------------------------",
-        f"    // Read mux — drive PRDATA based on PADDR (combinational)",
-        f"    // Reconstruct the 32-bit register word by placing each field",
-        f"    // at its correct bit position and OR-ing them together.",
+        f"    // Read mux — drive PRDATA based on PADDR (combinational).",
+        f"    // Per-access readback rules:",
+        f"    //   rw   → flop value",
+        f"    //   ro   → live HW input port",
+        f"    //   wo   → omitted from OR-tree (readback is 0)",
+        f"    //   w1c  → flop value (sticky bit)",
+        f"    //   rclr → flop value (clear happens next cycle in always_ff)",
         f"    // --------------------------------------------------------",
         f"    always_comb begin",
         f"        PRDATA = 32'h0;  // default: unimplemented addresses read as 0",
         f"        if (PSEL && !PWRITE) begin",
         f"            case (PADDR[7:0])",
     ]
-
     for reg in registers:
-        offset = reg["offset"]
-        offset_int = int(offset, 16) if isinstance(offset, str) else offset
-        lines.append(f"                8'h{offset_int:02X}: begin  // {reg['name']}")
+        lines.append(f"                8'h{offset_int_of(reg):02X}: begin  // {reg['name']}")
         terms = []
         for field in reg["fields"]:
+            access = field["access"]
+            if access == "wo":
+                continue  # write-only: readback is 0, contribute nothing to PRDATA
             msb, lsb = parse_bits(field["bits"])
-            sig = (f"r_{reg['name']}_{field['name']}" if field["access"] == "rw"
-                   else f"hw_{reg['name']}_{field['name']}")
-            # Shift field value up to its bit position in the 32-bit word
+            if access == "ro":
+                sig = f"hw_{reg['name']}_{field['name']}"     # live HW input
+            else:
+                sig = f"r_{reg['name']}_{field['name']}"      # storage flop
             terms.append(f"(32'({sig}) << {lsb})" if lsb > 0 else f"32'({sig})")
-        lines.append(f"                    PRDATA = {' | '.join(terms)};")
+        if terms:
+            lines.append(f"                    PRDATA = {' | '.join(terms)};")
+        else:
+            lines.append(f"                    PRDATA = 32'h0;  // all fields are wo")
         lines.append(f"                end")
-
     lines += [
         f"                default: PRDATA = 32'h0;",
         f"            endcase",
