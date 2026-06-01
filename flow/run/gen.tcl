@@ -53,7 +53,17 @@ puts "\[flow\] Project root: $project_root"
 read_spec [file join $project_root "spec/irq_ctrl.yaml"]
 
 # Step 2: Tell the tool where to put generated files
-set_output_dir [file join $project_root "gen"]
+# LEARNING NOTE: --outdir lets the caller override the output directory.
+#   "make check" uses this to generate into a temp dir (gen_check/) so it can
+#   diff that against the committed gen/ without clobbering anything.
+#   [file normalize] resolves relative paths against CWD (the project root
+#   when called from Make), giving us a clean absolute path regardless.
+set out_dir [file join $project_root "gen"]
+set idx2 [lsearch $argv "--outdir"]
+if {$idx2 >= 0} {
+    set out_dir [file normalize [lindex $argv [expr {$idx2 + 1}]]]
+}
+set_output_dir $out_dir
 
 # Step 3: Generate the requested output(s)
 # LEARNING NOTE — Phase 1 added `validate` here. In a real flow you'd also

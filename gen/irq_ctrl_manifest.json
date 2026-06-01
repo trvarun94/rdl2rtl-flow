@@ -5,6 +5,6 @@
   "register_count": 5,
   "field_count": 12,
   "outputs": [
-    "/Users/rajturaga/raj_projects/fe_flow/rdl2rtl_flow/gen/docs/irq_ctrl.md"
+    "/Users/rajturaga/raj_projects/fe_flow/rdl2rtl_flow/gen/rtl/irq_ctrl.sv"
   ]
 }

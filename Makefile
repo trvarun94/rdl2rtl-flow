@@ -30,6 +30,7 @@
 TCLSH       := tclsh
 SPEC        := spec/irq_ctrl.yaml
 GEN_DIR     := gen
+CHECK_DIR   := gen_check
 RUN_SCRIPT  := flow/run/gen.tcl
 
 # ---------------------------------------------------------------------------
@@ -106,14 +107,46 @@ validate:
 	@echo "[make] Done. See $(GEN_DIR)/validation_report.json"
 
 # ---------------------------------------------------------------------------
-# make check — consistency gate (implemented in Phase 4)
+# make check — consistency gate (Phase 4)
+#
+# LEARNING NOTE — Multi-line Make recipes:
+#   Each TAB-indented line in a recipe normally runs in its own shell subprocess.
+#   A backslash (\) at the end of a line joins it with the next so the entire
+#   block runs in ONE shell — that's how if/else/fi and "exit 1" work correctly
+#   here. The @ prefix suppresses echoing and applies to the whole joined block.
+#
+# LEARNING NOTE — Why BSD diff uses -x, not --exclude:
+#   macOS ships BSD diff; GNU diff (Linux/CI) uses --exclude=pattern.
+#   The -x flag is understood by both, so we use it for portability.
+#
+# LEARNING NOTE — What this gate catches (spec/output drift):
+#   A developer edits spec/irq_ctrl.yaml but forgets "make all" before
+#   committing. The committed gen/ files are now stale — the RTL, header,
+#   and docs no longer match the spec. This target re-generates everything
+#   into a temp dir ($(CHECK_DIR)/) and diffs. If anything differs, it prints
+#   the diff and exits non-zero so CI fails loudly on the pull request.
 # ---------------------------------------------------------------------------
 
 .PHONY: check
 check:
-	@echo "[make] Running consistency check..."
-	@echo "[make] Consistency check not yet implemented (Phase 4)"
-	@exit 0
+	@echo "[make] Consistency check: re-generating into $(CHECK_DIR)/..."
+	@rm -rf $(CHECK_DIR) && mkdir -p $(CHECK_DIR)
+	@$(TCLSH) $(RUN_SCRIPT) --output all --outdir $(CHECK_DIR) > /dev/null
+	@if diff -rq \
+	        -x "*_manifest.json" \
+	        -x "validation_report.json" \
+	        $(GEN_DIR) $(CHECK_DIR) > /dev/null 2>&1; then \
+	    echo "[make] check PASSED — gen/ is up to date."; \
+	    rm -rf $(CHECK_DIR); \
+	else \
+	    echo "[make] check FAILED — gen/ is out of date. Re-run: make all"; \
+	    diff -r \
+	        -x "*_manifest.json" \
+	        -x "validation_report.json" \
+	        $(GEN_DIR) $(CHECK_DIR); \
+	    rm -rf $(CHECK_DIR); \
+	    exit 1; \
+	fi
 
 # ---------------------------------------------------------------------------
 # make all — full flow: validate first, then generate, then check
@@ -144,4 +177,5 @@ clean:
 	-rm -rf $(GEN_DIR)/docs
 	-rm -f  $(GEN_DIR)/*_manifest.json
 	-rm -f  $(GEN_DIR)/validation_report.json
+	-rm -rf $(CHECK_DIR)
 	@echo "[make] Clean complete."
