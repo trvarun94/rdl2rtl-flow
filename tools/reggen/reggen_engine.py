@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-reggen_engine.py — Register generation engine (Phase 0: RTL output)
+reggen_engine.py — Register generation engine (Phase 0: RTL, Phase 2: C header)
 
 LEARNING NOTE: This is a simplified mock of what commercial register generators do.
 Real tools that solve the same problem:
@@ -13,7 +13,7 @@ Those tools take SystemRDL (.rdl) as input. We use YAML here so the parsing is
 transparent — you can see exactly what data drives the generation.
 
 Usage:
-    python3 reggen_engine.py --spec <spec.yaml> --outdir <output_dir> --output rtl
+    python3 reggen_engine.py --spec <spec.yaml> --outdir <output_dir> --output rtl|header|docs|all
 """
 
 import argparse
@@ -452,6 +452,189 @@ def generate_rtl(spec):
 
 
 # ---------------------------------------------------------------------------
+# C firmware header generation
+# ---------------------------------------------------------------------------
+
+def generate_header(spec):
+    """
+    Generate a C firmware header from the parsed spec dict.
+    Returns the header source as a string.
+
+    FIRMWARE CONCEPT — Why a C header?
+    The RTL (Phase 0) is the hardware implementation. The C header is the
+    firmware contract: it lets a C programmer write to a register without
+    knowing or hard-coding any hex addresses or bit positions.
+
+    Instead of:
+        *((volatile uint32_t *)0x40001000) = 0x00000005;  // magic numbers, fragile
+
+    Firmware engineers write:
+        IRQ_CTRL->CTRL = (1U << IRQ_CTRL_CTRL_ENABLE_POS)
+                       | (2U << IRQ_CTRL_CTRL_MODE_POS);
+
+    The header has four parts (each explained below):
+      1. Include guard + #include <stdint.h>
+      2. Base address macro
+      3. Register offset macros
+      4. Per-field POS / MSK / WIDTH macros
+      5. volatile struct typedef + pointer macro
+
+    WHY NOT C PACKED BITFIELDS?
+    You might expect:
+        struct { uint32_t ENABLE:1; uint32_t MODE:2; } CTRL;
+    The C standard leaves bitfield layout (bit order, padding) implementation-
+    defined. ARM-GCC, MSVC, and IAR pack them differently. Production embedded
+    code uses macro masks — portable across every compiler, CPU, and endianness.
+    See docs/notes/c-header-layout.md for the full story.
+    """
+    block     = spec["block"]
+    prefix    = block.upper()          # "irq_ctrl" → "IRQ_CTRL"
+    base_addr = spec["base_addr"]
+    registers = spec["registers"]
+
+    # Sort registers by byte offset so the struct members are in address order.
+    sorted_regs = sorted(registers, key=offset_int_of)
+
+    base_str = hex(base_addr) if isinstance(base_addr, int) else base_addr
+    guard    = f"{prefix}_H"
+    lines    = []
+
+    # ------------------------------------------------------------------
+    # Include guard + file header
+    # ------------------------------------------------------------------
+    lines += [
+        f"#ifndef {guard}",
+        f"#define {guard}",
+        f"",
+        f"/*",
+        f" * GENERATED FILE — do not edit by hand.",
+        f" * Source: spec/{block}.yaml",
+        f" * Generator: tools/reggen/reggen_engine.py",
+        f" *",
+        f" * Block  : {block}",
+        f" * Base   : {base_str}",
+        f" * Regs   : {len(registers)}",
+        f" */",
+        f"",
+        f"#include <stdint.h>",  # uint32_t lives here
+        f"",
+    ]
+
+    # ------------------------------------------------------------------
+    # Part 1 — Base address
+    # ------------------------------------------------------------------
+    # FIRMWARE NOTE: The 'U' suffix makes this an unsigned integer literal.
+    # Without it, large addresses (> 0x7FFFFFFF) would be negative signed ints
+    # on 32-bit platforms. Always use 'U' for hardware addresses and masks.
+    lines += [
+        f"/* Base address */",
+        f"#define {prefix}_BASE  {base_str}U",
+        f"",
+    ]
+
+    # ------------------------------------------------------------------
+    # Part 2 — Register offset macros
+    # ------------------------------------------------------------------
+    # FIRMWARE NOTE: Firmware accesses a register as (BASE + OFFSET).
+    # Having a named macro for each offset means a spec change (e.g. moving
+    # a register) only requires regenerating this file — no manual grep-and-fix.
+    lines.append("/* Register offsets */")
+    off_macros = [
+        (f"#define {prefix}_{reg['name']}_OFFSET", f"0x{offset_int_of(reg):02X}U")
+        for reg in sorted_regs
+    ]
+    col = max(len(m) for m, _ in off_macros) + 2
+    for macro, val in off_macros:
+        lines.append(f"{macro:<{col}}  {val}")
+    lines.append("")
+
+    # ------------------------------------------------------------------
+    # Part 3 — Per-field POS / MSK / WIDTH macros
+    # ------------------------------------------------------------------
+    # FIRMWARE NOTE — three macros per field:
+    #   _POS   : bit position of the LSB of the field (for shifting)
+    #   _MSK   : bitmask isolating the field (for reading: reg & MSK)
+    #   _WIDTH : number of bits (useful for range checks and documentation)
+    #
+    # Example usage in firmware:
+    #   Write MODE=2:  IRQ_CTRL->CTRL |= (2U << IRQ_CTRL_CTRL_MODE_POS);
+    #   Read  MODE:    mode = (IRQ_CTRL->CTRL & IRQ_CTRL_CTRL_MODE_MSK)
+    #                         >> IRQ_CTRL_CTRL_MODE_POS;
+    for reg in sorted_regs:
+        desc = reg.get("desc", "")
+        lines.append(f"/* {reg['name']}" + (f" — {desc}" if desc else "") + " */")
+
+        entries = []
+        for field in reg["fields"]:
+            msb, lsb = parse_bits(field["bits"])
+            w        = field_width(msb, lsb)
+            mask_val = (1 << w) - 1
+            pos_m  = f"#define {prefix}_{reg['name']}_{field['name']}_POS"
+            msk_m  = f"#define {prefix}_{reg['name']}_{field['name']}_MSK"
+            wid_m  = f"#define {prefix}_{reg['name']}_{field['name']}_WIDTH"
+            entries.append((pos_m, f"{lsb}U",
+                            msk_m, f"(0x{mask_val:X}U << {lsb}U)",
+                            wid_m, f"{w}U"))
+
+        # Align all three macro names in this register to the same column.
+        col = max(max(len(e[0]), len(e[2]), len(e[4])) for e in entries) + 2
+        for pos_m, pos_v, msk_m, msk_v, wid_m, wid_v in entries:
+            lines.append(f"{pos_m:<{col}}  {pos_v}")
+            lines.append(f"{msk_m:<{col}}  {msk_v}")
+            lines.append(f"{wid_m:<{col}}  {wid_v}")
+        lines.append("")
+
+    # ------------------------------------------------------------------
+    # Part 4 — volatile struct typedef + pointer macro
+    # ------------------------------------------------------------------
+    # FIRMWARE NOTE — 'volatile struct':
+    #   'volatile' tells the compiler that memory at these addresses can change
+    #   outside its view (hardware writes registers between two SW reads).
+    #   Without it, the compiler might cache a register read in a CPU register
+    #   and skip re-reading memory — a classic firmware bug.
+    #
+    #   The struct gives typed field access:
+    #     IRQ_CTRL->CTRL = 1U;       ← write to offset 0x00
+    #     uint32_t s = IRQ_CTRL->STATUS;  ← read from offset 0x04
+    #
+    #   Padding (reserved[N]) is inserted for any gap between registers
+    #   so the struct layout exactly mirrors the hardware memory map.
+    lines += [
+        "/*",
+        " * Typed struct — use IRQ_CTRL->REGNAME for register access.",
+        " * Members are plain uint32_t (not packed bitfields) for portability.",
+        " */",
+        f"typedef volatile struct {{",
+    ]
+
+    expected_off = 0
+    pad_idx      = 0
+    for reg in sorted_regs:
+        off = offset_int_of(reg)
+        if off > expected_off:
+            gap_words = (off - expected_off) // 4
+            lines.append(
+                f"    uint32_t _reserved{pad_idx}[{gap_words}]; /* 0x{expected_off:02X}–0x{off - 4:02X}: gap */"
+            )
+            pad_idx += 1
+        desc    = reg.get("desc", "")
+        comment = f"/* 0x{off:02X}" + (f" — {desc}" if desc else "") + " */"
+        lines.append(f"    uint32_t {reg['name']}; {comment}")
+        expected_off = off + 4
+
+    lines += [
+        f"}} {block}_t;",
+        f"",
+        f"/* Pointer macro — IRQ_CTRL->CTRL dereferences the base address as the struct */",
+        f"#define {prefix}  (({block}_t *){prefix}_BASE)",
+        f"",
+        f"#endif /* {guard} */",
+    ]
+
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
 # Generation manifest (JSON)
 # ---------------------------------------------------------------------------
 
@@ -504,7 +687,13 @@ def main():
         outputs_written.append(rtl_path)
 
     if args.output in ("header", "all"):
-        print("[reggen] Header generation not yet implemented (Phase 2)")
+        inc_dir = os.path.join(args.outdir, "include")
+        os.makedirs(inc_dir, exist_ok=True)
+        header_path = os.path.join(inc_dir, f"{spec['block']}.h")
+        with open(header_path, "w") as f:
+            f.write(generate_header(spec))
+        print(f"[reggen] Header written → {header_path}")
+        outputs_written.append(header_path)
 
     if args.output in ("docs", "all"):
         print("[reggen] Docs generation not yet implemented (Phase 3)")
