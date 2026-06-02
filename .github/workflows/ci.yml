@@ -1,0 +1,30 @@
+name: Register Flow CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Python deps
+        run: pip install pyyaml
+
+      - name: Install tclsh
+        run: sudo apt-get install -y tcl
+
+      # Step 1: lint the spec — fast gate, fails loudly before touching gen/
+      - name: Validate spec
+        run: make validate
+
+      # Step 2: re-generate everything and diff against committed gen/
+      # Fails if spec and committed outputs have drifted
+      - name: Consistency check
+        run: make check
