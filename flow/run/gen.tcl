@@ -75,9 +75,10 @@ switch $output_type {
     "rtl"      { generate_rtl    }
     "header"   { generate_header }
     "docs"     { generate_docs   }
+    "lint"     { lint_rtl        }
     "all"      { validate_spec; generate_rtl; generate_header; generate_docs }
     default    {
-        error "Unknown output type: $output_type. Use validate, rtl, header, docs, or all."
+        error "Unknown output type: $output_type. Use validate, rtl, header, docs, lint, or all."
     }
 }
 

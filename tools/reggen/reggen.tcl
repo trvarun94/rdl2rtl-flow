@@ -166,3 +166,14 @@ proc generate_docs {} {
     _run_engine docs
     puts "\[reggen\] Docs generation complete."
 }
+
+proc lint_rtl {} {
+    # LEARNING NOTE: lint_rtl mirrors real EDA commands like `check_design`
+    # in Synopsys DC or `lint_rtl` in Cadence Conformal. It is an independent
+    # quality gate that runs AFTER generation — the linter is a separate tool
+    # (Verilator) that knows nothing about our spec. If it exits non-zero,
+    # TCL's exec raises an error and Make aborts — the gate holds.
+    puts "\[reggen\] Running RTL lint (Verilator --lint-only)..."
+    _run_engine lint
+    puts "\[reggen\] Lint complete."
+}

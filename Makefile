@@ -50,8 +50,9 @@ help:
 	@echo "  make header    Generate C firmware header  (Phase 2)"
 	@echo "  make docs      Generate register-map docs  (Phase 3)"
 	@echo "  make validate  Lint the register spec       (Phase 1)"
+	@echo "  make lint      RTL lint gate (Verilator --lint-only)"
 	@echo "  make check     Consistency gate: are gen/ files up to date? (Phase 4)"
-	@echo "  make all       generate + validate + check (full flow)"
+	@echo "  make all       validate + rtl + header + docs + lint + check (full flow)"
 	@echo "  make clean     Remove all generated outputs"
 	@echo "  make help      Show this message"
 	@echo ""
@@ -107,6 +108,29 @@ validate:
 	@echo "[make] Done. See $(GEN_DIR)/validation_report.json"
 
 # ---------------------------------------------------------------------------
+# make lint — RTL lint gate
+#
+# LEARNING NOTE — what lint is and isn't:
+#   Lint is STATIC analysis — Verilator reads the .sv file and checks for
+#   structural problems (width mismatches, undriven nets, etc.) without
+#   simulating a single clock cycle. No testbench needed.
+#
+#   In a real flow, lint runs immediately after RTL generation and gates
+#   synthesis. If lint is red, synthesis doesn't see the file.
+#
+#   Why Verilator and not a commercial linter?
+#   Spyglass (Synopsys) and Questa Lint (Siemens) are the industry tools;
+#   Verilator is the best open-source equivalent and is used by real projects
+#   (OpenTitan, lowRISC, etc.). Same concept, no license required.
+# ---------------------------------------------------------------------------
+
+.PHONY: lint
+lint:
+	@echo "[make] Running RTL lint..."
+	$(TCLSH) $(RUN_SCRIPT) --output lint
+	@echo "[make] Done. See $(GEN_DIR)/lint_report.json"
+
+# ---------------------------------------------------------------------------
 # make check — consistency gate (Phase 4)
 #
 # LEARNING NOTE — Multi-line Make recipes:
@@ -135,6 +159,7 @@ check:
 	@if diff -rq \
 	        -x "*_manifest.json" \
 	        -x "validation_report.json" \
+	        -x "lint_report.json" \
 	        $(GEN_DIR) $(CHECK_DIR) > /dev/null 2>&1; then \
 	    echo "[make] check PASSED — gen/ is up to date."; \
 	    rm -rf $(CHECK_DIR); \
@@ -143,6 +168,7 @@ check:
 	    diff -r \
 	        -x "*_manifest.json" \
 	        -x "validation_report.json" \
+	        -x "lint_report.json" \
 	        $(GEN_DIR) $(CHECK_DIR); \
 	    rm -rf $(CHECK_DIR); \
 	    exit 1; \
@@ -158,7 +184,7 @@ check:
 # ---------------------------------------------------------------------------
 
 .PHONY: all
-all: validate rtl header docs check
+all: validate rtl header docs lint check
 	@echo "[make] Full flow complete."
 
 # ---------------------------------------------------------------------------
@@ -177,5 +203,6 @@ clean:
 	-rm -rf $(GEN_DIR)/docs
 	-rm -f  $(GEN_DIR)/*_manifest.json
 	-rm -f  $(GEN_DIR)/validation_report.json
+	-rm -f  $(GEN_DIR)/lint_report.json
 	-rm -rf $(CHECK_DIR)
 	@echo "[make] Clean complete."

@@ -19,6 +19,8 @@ Usage:
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 import yaml  # PyYAML — pip install pyyaml
 
@@ -742,6 +744,72 @@ def generate_header(spec):
 
 
 # ---------------------------------------------------------------------------
+# RTL lint (Verilator --lint-only)
+# ---------------------------------------------------------------------------
+
+def run_lint(spec, outdir):
+    """
+    Run Verilator in lint-only mode on the generated RTL file.
+    Writes gen/lint_report.json. Exits non-zero (hard fail) if:
+      - verilator is not on PATH
+      - verilator reports any warnings or errors
+
+    FLOW CONCEPT — why lint after generation, not during?
+    The generator (us) is responsible for emitting correct RTL.
+    Lint is the independent checker that catches anything we got wrong:
+    width mismatches, undriven nets, implicit wire declarations, etc.
+    It is the first gate before synthesis sees the file.
+
+    Verilator --lint-only does static analysis only — no simulation,
+    no C++ compilation. Runs in under a second.
+    """
+    if shutil.which("verilator") is None:
+        print("[reggen] ERROR: 'verilator' not found on PATH.", file=sys.stderr)
+        print("[reggen] Install it with:  brew install verilator  (macOS)", file=sys.stderr)
+        print("[reggen]                   apt install verilator    (Debian/Ubuntu)", file=sys.stderr)
+        sys.exit(1)
+
+    sv_path = os.path.join(outdir, "rtl", f"{spec['block']}.sv")
+    if not os.path.exists(sv_path):
+        print(f"[reggen] ERROR: RTL file not found: {sv_path}", file=sys.stderr)
+        print("[reggen] Run 'make rtl' before 'make lint'.", file=sys.stderr)
+        sys.exit(1)
+
+    result = subprocess.run(
+        # --Wall enables all warnings; -Wno-UNUSEDSIGNAL suppresses the
+        # "upper bits of PADDR/PWDATA unused" warning — those signals are
+        # mandated 32-bit by the APB protocol even when the register map
+        # uses fewer bits. This is a standard lint waiver for APB blocks.
+        ["verilator", "--lint-only", "--Wall", "-Wno-UNUSEDSIGNAL", "-sv", sv_path],
+        capture_output=True,
+        text=True,
+    )
+
+    passed = result.returncode == 0
+    report = {
+        "tool": "verilator",
+        "version_flag": "--lint-only",
+        "rtl_file": sv_path,
+        "exit_code": result.returncode,
+        "status": "PASS" if passed else "FAIL",
+        "stdout": result.stdout.strip(),
+        "stderr": result.stderr.strip(),
+    }
+
+    report_path = os.path.join(outdir, "lint_report.json")
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=2)
+
+    if passed:
+        print(f"[reggen] Lint PASSED  → {report_path}")
+    else:
+        print(f"[reggen] Lint FAILED  → {report_path}", file=sys.stderr)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Generation manifest (JSON)
 # ---------------------------------------------------------------------------
 
@@ -777,7 +845,7 @@ def main():
     parser.add_argument("--spec",   required=True, help="Path to register spec YAML")
     parser.add_argument("--outdir", required=True, help="Output directory root")
     parser.add_argument("--output", required=True,
-                        choices=["rtl", "header", "docs", "all"],
+                        choices=["rtl", "header", "docs", "lint", "all"],
                         help="What to generate")
     args = parser.parse_args()
 
@@ -810,6 +878,10 @@ def main():
             f.write(generate_docs(spec))
         print(f"[reggen] Docs written  → {docs_path}")
         outputs_written.append(docs_path)
+
+    if args.output == "lint":
+        run_lint(spec, args.outdir)
+        return  # lint produces no design artifacts; skip manifest update
 
     manifest_path = write_manifest(spec, args.outdir, outputs_written)
     print(f"[reggen] Manifest    → {manifest_path}")
