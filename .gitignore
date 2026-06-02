@@ -18,3 +18,11 @@ venv/
 .tmp_gen/
 
 # gen/ is intentionally committed — it's the checked-in baseline for consistency gating
+
+# Internal documentation
+CLAUDE.md
+RDL2RTL_PROMPT.md
+docs/HANDOFF.md
+docs/SPEC.md
+docs/sessions/
+docs/notes/

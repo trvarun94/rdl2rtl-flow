@@ -34,8 +34,6 @@ spec/           register spec(s) — the single source of truth (YAML)
 tools/reggen/   generator: TCL API + Python engine + templates
 flow/run/       designer-facing TCL run scripts
 gen/            GENERATED outputs: rtl/, include/, docs/
-config/         project config (which spec, which outputs)
-docs/           learning notes, session logs, HANDOFF.md
 Makefile        top-level entry point
 ```
 
@@ -44,9 +42,4 @@ Makefile        top-level entry point
 - **Make** — single front door
 - **TCL** — tool command API + run scripts (mirrors real EDA tool flows)
 - **Python** — spec parser, validators, generators
-- **YAML** — register spec format (real tools use SystemRDL; noted in `docs/notes/systemrdl-intro.md`)
-
-## Learning trail
-
-See `docs/notes/` for beginner-friendly explanations of every concept used here:
-registers/CSRs, APB protocol, code generation, access types, Make, TCL, and more.
+- **YAML** — register spec format (real tools use SystemRDL)
