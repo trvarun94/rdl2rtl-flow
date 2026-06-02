@@ -4,6 +4,6 @@
   "rtl_file": "/Users/rajturaga/raj_projects/fe_flow/rdl2rtl_flow/gen/rtl/irq_ctrl.sv",
   "exit_code": 0,
   "status": "PASS",
-  "stdout": "- V e r i l a t i o n   R e p o r t: Verilator 5.048 2026-04-26 rev vUNKNOWN-built20260426\n- Verilator: Built from 0.038 MB sources in 2 modules, into 0.029 MB in 3 C++ files needing 0.000 MB\n- Verilator: Walltime 0.025 s (elab=0.005, cvt=0.010, bld=0.000); cpu 0.011 s on 1 threads; allocated 10.016 MB",
+  "stdout": "- V e r i l a t i o n   R e p o r t: Verilator 5.048 2026-04-26 rev vUNKNOWN-built20260426\n- Verilator: Built from 0.038 MB sources in 2 modules, into 0.029 MB in 3 C++ files needing 0.000 MB\n- Verilator: Walltime 0.022 s (elab=0.004, cvt=0.008, bld=0.000); cpu 0.010 s on 1 threads; allocated 10.016 MB",
   "stderr": ""
 }

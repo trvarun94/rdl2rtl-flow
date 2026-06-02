@@ -4,7 +4,13 @@
   "spec_base_addr": "0x40001000",
   "register_count": 5,
   "field_count": 12,
-  "outputs": [
-    "/Users/rajturaga/raj_projects/fe_flow/rdl2rtl_flow/gen/docs/irq_ctrl.md"
-  ]
+  "outputs": {
+    "rtl": "rtl/irq_ctrl.sv",
+    "header": "include/irq_ctrl.h",
+    "docs": "docs/irq_ctrl.md"
+  },
+  "lint": {
+    "status": "PASS",
+    "tool": "verilator"
+  }
 }

@@ -177,3 +177,15 @@ proc lint_rtl {} {
     _run_engine lint
     puts "\[reggen\] Lint complete."
 }
+
+proc generate_manifest {} {
+    # LEARNING NOTE: generate_manifest mirrors EDA report commands like
+    # `report_design` in Synopsys DC or `report_qor` in Cadence Innovus.
+    # It runs LAST — after every generator and lint have written their
+    # files — and scans the output directory for what's actually there.
+    # The manifest is an end-of-run audit snapshot: single owner, single
+    # source of truth, accurate by construction.
+    puts "\[reggen\] Building manifest from gen/ snapshot..."
+    _run_engine manifest
+    puts "\[reggen\] Manifest complete."
+}

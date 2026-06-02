@@ -51,8 +51,9 @@ help:
 	@echo "  make docs      Generate register-map docs  (Phase 3)"
 	@echo "  make validate  Lint the register spec       (Phase 1)"
 	@echo "  make lint      RTL lint gate (Verilator --lint-only)"
+	@echo "  make manifest  End-of-run manifest snapshot (scans gen/)"
 	@echo "  make check     Consistency gate: are gen/ files up to date? (Phase 4)"
-	@echo "  make all       validate + rtl + header + docs + lint + check (full flow)"
+	@echo "  make all       validate + rtl + header + docs + lint + manifest + check (full flow)"
 	@echo "  make clean     Remove all generated outputs"
 	@echo "  make help      Show this message"
 	@echo ""
@@ -131,6 +132,24 @@ lint:
 	@echo "[make] Done. See $(GEN_DIR)/lint_report.json"
 
 # ---------------------------------------------------------------------------
+# make manifest — end-of-run audit snapshot
+#
+# LEARNING NOTE — why a dedicated manifest step:
+#   The manifest is a summary of what's in gen/ — which RTL, header, and docs
+#   files were produced, plus the lint result. In real EDA flows this is the
+#   job of dedicated report commands (`report_design`, `report_qor`) that run
+#   AFTER generation and synthesis, scanning the design database for a snapshot.
+#   Keeping it as its own step means one owner, one source of truth — no
+#   generator has to summarize any other generator's work.
+# ---------------------------------------------------------------------------
+
+.PHONY: manifest
+manifest:
+	@echo "[make] Building manifest..."
+	$(TCLSH) $(RUN_SCRIPT) --output manifest
+	@echo "[make] Done. See $(GEN_DIR)/irq_ctrl_manifest.json"
+
+# ---------------------------------------------------------------------------
 # make check — consistency gate (Phase 4)
 #
 # LEARNING NOTE — Multi-line Make recipes:
@@ -184,7 +203,7 @@ check:
 # ---------------------------------------------------------------------------
 
 .PHONY: all
-all: validate rtl header docs lint check
+all: validate rtl header docs lint manifest check
 	@echo "[make] Full flow complete."
 
 # ---------------------------------------------------------------------------

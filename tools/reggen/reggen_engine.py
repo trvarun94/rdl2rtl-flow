@@ -810,27 +810,65 @@ def run_lint(spec, outdir):
 
 
 # ---------------------------------------------------------------------------
-# Generation manifest (JSON)
+# Generation manifest (JSON) — scanned from disk, not accumulated by generators
 # ---------------------------------------------------------------------------
 
-def write_manifest(spec, outdir, outputs_written):
+def scan_manifest(spec, outdir):
     """
-    Write a small JSON manifest recording what was generated and from what.
-    Real tools produce run reports for auditing — this mimics that practice.
+    Build the run manifest by scanning <outdir> for generated artifacts.
+    This is an end-of-run audit snapshot — the LAST step in `make all`,
+    after every generator and lint have produced their files.
+
+    FLOW CONCEPT — why scan disk instead of accumulating?
+    In real EDA flows (Synopsys DC, Cadence Innovus) summary reports are
+    produced by dedicated commands (`report_design`, `report_qor`) that run
+    AFTER generation/synthesis and inspect the design database. Generators
+    don't summarize themselves — that responsibility lives in one place,
+    making the report authoritative and easy to reason about.
+
+    Only files that actually exist on disk are recorded. The lint block is
+    included only if gen/lint_report.json is present (graceful degradation).
+    Output paths are stored relative to outdir so the committed manifest
+    is portable across machines.
     """
-    base = spec["base_addr"]
+    block = spec["block"]
+    base  = spec["base_addr"]
+
+    # Probe known artifact locations
+    candidates = {
+        "rtl":    os.path.join("rtl",     f"{block}.sv"),
+        "header": os.path.join("include", f"{block}.h"),
+        "docs":   os.path.join("docs",    f"{block}.md"),
+    }
+    outputs = {
+        kind: rel_path
+        for kind, rel_path in candidates.items()
+        if os.path.exists(os.path.join(outdir, rel_path))
+    }
+
     manifest = {
         "tool": "reggen",
-        "block": spec["block"],
-        # Store as hex string for readability; YAML parses 0x... as an int.
+        "block": block,
         "spec_base_addr": hex(base) if isinstance(base, int) else base,
         "register_count": len(spec["registers"]),
         "field_count": sum(len(r["fields"]) for r in spec["registers"]),
-        "outputs": outputs_written,
+        "outputs": outputs,
     }
-    manifest_path = os.path.join(outdir, f"{spec['block']}_manifest.json")
+
+    # Include lint status if a lint report exists
+    lint_path = os.path.join(outdir, "lint_report.json")
+    if os.path.exists(lint_path):
+        with open(lint_path) as f:
+            lint_report = json.load(f)
+        manifest["lint"] = {
+            "status": lint_report.get("status"),
+            "tool":   lint_report.get("tool"),
+        }
+
+    manifest_path = os.path.join(outdir, f"{block}_manifest.json")
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
+    print(f"[reggen] Manifest written → {manifest_path}")
     return manifest_path
 
 
@@ -845,12 +883,11 @@ def main():
     parser.add_argument("--spec",   required=True, help="Path to register spec YAML")
     parser.add_argument("--outdir", required=True, help="Output directory root")
     parser.add_argument("--output", required=True,
-                        choices=["rtl", "header", "docs", "lint", "all"],
+                        choices=["rtl", "header", "docs", "lint", "manifest", "all"],
                         help="What to generate")
     args = parser.parse_args()
 
     spec = load_spec(args.spec)
-    outputs_written = []
 
     if args.output in ("rtl", "all"):
         rtl_dir = os.path.join(args.outdir, "rtl")
@@ -859,7 +896,6 @@ def main():
         with open(rtl_path, "w") as f:
             f.write(generate_rtl(spec))
         print(f"[reggen] RTL written  → {rtl_path}")
-        outputs_written.append(rtl_path)
 
     if args.output in ("header", "all"):
         inc_dir = os.path.join(args.outdir, "include")
@@ -868,7 +904,6 @@ def main():
         with open(header_path, "w") as f:
             f.write(generate_header(spec))
         print(f"[reggen] Header written → {header_path}")
-        outputs_written.append(header_path)
 
     if args.output in ("docs", "all"):
         docs_dir = os.path.join(args.outdir, "docs")
@@ -877,14 +912,12 @@ def main():
         with open(docs_path, "w") as f:
             f.write(generate_docs(spec))
         print(f"[reggen] Docs written  → {docs_path}")
-        outputs_written.append(docs_path)
 
     if args.output == "lint":
         run_lint(spec, args.outdir)
-        return  # lint produces no design artifacts; skip manifest update
 
-    manifest_path = write_manifest(spec, args.outdir, outputs_written)
-    print(f"[reggen] Manifest    → {manifest_path}")
+    if args.output == "manifest":
+        scan_manifest(spec, args.outdir)
 
 
 if __name__ == "__main__":
