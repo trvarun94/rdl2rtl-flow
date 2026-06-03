@@ -32,6 +32,10 @@ SPEC        := spec/irq_ctrl.yaml
 GEN_DIR     := gen
 CHECK_DIR   := gen_check
 RUN_SCRIPT  := flow/run/gen.tcl
+IVERILOG    := iverilog
+VVP         := vvp
+TB_SRC      := tb/irq_ctrl_tb.sv
+SIM_TOP     := $(GEN_DIR)/sim/irq_ctrl_sim
 
 # ---------------------------------------------------------------------------
 # Default target: show help
@@ -51,9 +55,10 @@ help:
 	@echo "  make docs      Generate register-map docs  (Phase 3)"
 	@echo "  make validate  Lint the register spec       (Phase 1)"
 	@echo "  make lint      RTL lint gate (Verilator --lint-only)"
+	@echo "  make sim       Functional simulation (iverilog + vvp testbench)"
 	@echo "  make manifest  End-of-run manifest snapshot (scans gen/)"
 	@echo "  make check     Consistency gate: are gen/ files up to date? (Phase 4)"
-	@echo "  make all       validate + rtl + header + docs + lint + manifest + check (full flow)"
+	@echo "  make all       validate + rtl + header + docs + lint + sim + manifest + check (full flow)"
 	@echo "  make clean     Remove all generated outputs"
 	@echo "  make help      Show this message"
 	@echo ""
@@ -132,6 +137,35 @@ lint:
 	@echo "[make] Done. See $(GEN_DIR)/lint_report.json"
 
 # ---------------------------------------------------------------------------
+# make sim — compile and run the functional testbench
+#
+# LEARNING NOTE — two-step simulation flow (iverilog + vvp):
+#   iverilog compiles one or more .sv/.v source files into an intermediate
+#   bytecode executable (here: gen/sim/irq_ctrl_sim). This step catches
+#   syntax and elaboration errors (wrong port counts, undeclared signals).
+#
+#   vvp is the runtime that executes that bytecode, running the simulation
+#   from time 0 until $finish or $fatal. $fatal exits with non-zero status,
+#   so Make propagates the failure automatically.
+#
+#   In a real flow this step is replaced by VCS, Xcelium, or Questa, but the
+#   split between compile and run is identical — "vlogan + vcs -R" (VCS) or
+#   "xmvlog + xmsim" (Xcelium) are the commercial equivalents.
+#
+#   -g2012: compile in SystemVerilog-2012 mode (supports logic, always_ff, etc.)
+#   mkdir -p: create gen/sim/ if it does not exist yet (harmless if it does)
+# ---------------------------------------------------------------------------
+
+.PHONY: sim
+sim: rtl
+	@echo "[make] Compiling testbench..."
+	@mkdir -p $(GEN_DIR)/sim
+	$(IVERILOG) -g2012 -o $(SIM_TOP) $(TB_SRC) $(GEN_DIR)/rtl/irq_ctrl.sv
+	@echo "[make] Running simulation..."
+	$(VVP) $(SIM_TOP)
+	@echo "[make] Simulation PASSED."
+
+# ---------------------------------------------------------------------------
 # make manifest — end-of-run audit snapshot
 #
 # LEARNING NOTE — why a dedicated manifest step:
@@ -179,6 +213,7 @@ check:
 	        -x "*_manifest.json" \
 	        -x "validation_report.json" \
 	        -x "lint_report.json" \
+	        -x "sim" \
 	        $(GEN_DIR) $(CHECK_DIR) > /dev/null 2>&1; then \
 	    echo "[make] check PASSED — gen/ is up to date."; \
 	    rm -rf $(CHECK_DIR); \
@@ -188,6 +223,7 @@ check:
 	        -x "*_manifest.json" \
 	        -x "validation_report.json" \
 	        -x "lint_report.json" \
+	        -x "sim" \
 	        $(GEN_DIR) $(CHECK_DIR); \
 	    rm -rf $(CHECK_DIR); \
 	    exit 1; \
@@ -203,7 +239,7 @@ check:
 # ---------------------------------------------------------------------------
 
 .PHONY: all
-all: validate rtl header docs lint manifest check
+all: validate rtl header docs lint sim manifest check
 	@echo "[make] Full flow complete."
 
 # ---------------------------------------------------------------------------
@@ -223,5 +259,6 @@ clean:
 	-rm -f  $(GEN_DIR)/*_manifest.json
 	-rm -f  $(GEN_DIR)/validation_report.json
 	-rm -f  $(GEN_DIR)/lint_report.json
+	-rm -rf $(GEN_DIR)/sim
 	-rm -rf $(CHECK_DIR)
 	@echo "[make] Clean complete."

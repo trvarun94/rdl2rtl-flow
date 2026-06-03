@@ -17,14 +17,25 @@ jobs:
       - name: Install Python deps
         run: pip install pyyaml
 
-      - name: Install tclsh
-        run: sudo apt-get install -y tcl
+      - name: Install system tools
+        run: sudo apt-get install -y tcl iverilog verilator
 
       # Step 1: lint the spec — fast gate, fails loudly before touching gen/
       - name: Validate spec
         run: make validate
 
-      # Step 2: re-generate everything and diff against committed gen/
+      # Step 2: static RTL lint (Verilator --lint-only) — catches width
+      # mismatches, undriven nets, etc. without running a simulation
+      - name: RTL lint
+        run: make lint
+
+      # Step 3: compile and run the APB testbench — one test per access type
+      # iverilog compiles tb/irq_ctrl_tb.sv + gen/rtl/irq_ctrl.sv;
+      # vvp runs it; $fatal on any check failure → non-zero exit → CI red
+      - name: Functional simulation
+        run: make sim
+
+      # Step 4: re-generate everything and diff against committed gen/
       # Fails if spec and committed outputs have drifted
       - name: Consistency check
         run: make check
