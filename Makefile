@@ -32,10 +32,6 @@ SPEC        := spec/irq_ctrl.yaml
 GEN_DIR     := gen
 CHECK_DIR   := gen_check
 RUN_SCRIPT  := flow/run/gen.tcl
-IVERILOG    := iverilog
-VVP         := vvp
-TB_SRC      := tb/irq_ctrl_tb.sv
-SIM_TOP     := $(GEN_DIR)/sim/irq_ctrl_sim
 
 # ---------------------------------------------------------------------------
 # Default target: show help
@@ -141,29 +137,26 @@ lint:
 #
 # LEARNING NOTE — two-step simulation flow (iverilog + vvp):
 #   iverilog compiles one or more .sv/.v source files into an intermediate
-#   bytecode executable (here: gen/sim/irq_ctrl_sim). This step catches
-#   syntax and elaboration errors (wrong port counts, undeclared signals).
+#   bytecode executable (gen/sim/irq_ctrl_sim). This step catches syntax and
+#   elaboration errors (wrong port counts, undeclared signals).
 #
 #   vvp is the runtime that executes that bytecode, running the simulation
-#   from time 0 until $finish or $fatal. $fatal exits with non-zero status,
-#   so Make propagates the failure automatically.
+#   from time 0 until $finish or $fatal. $fatal exits with non-zero status.
 #
 #   In a real flow this step is replaced by VCS, Xcelium, or Questa, but the
 #   split between compile and run is identical — "vlogan + vcs -R" (VCS) or
 #   "xmvlog + xmsim" (Xcelium) are the commercial equivalents.
 #
-#   -g2012: compile in SystemVerilog-2012 mode (supports logic, always_ff, etc.)
-#   mkdir -p: create gen/sim/ if it does not exist yet (harmless if it does)
+#   We delegate to TCL→Python (like make lint) so that gen/sim_report.json
+#   is written with PASS *or* FAIL before Make exits — a stale PASS from a
+#   previous run will never mask a current failure.
 # ---------------------------------------------------------------------------
 
 .PHONY: sim
 sim: rtl
-	@echo "[make] Compiling testbench..."
-	@mkdir -p $(GEN_DIR)/sim
-	$(IVERILOG) -g2012 -o $(SIM_TOP) $(TB_SRC) $(GEN_DIR)/rtl/irq_ctrl.sv
-	@echo "[make] Running simulation..."
-	$(VVP) $(SIM_TOP)
-	@echo "[make] Simulation PASSED."
+	@echo "[make] Running functional simulation..."
+	$(TCLSH) $(RUN_SCRIPT) --output sim
+	@echo "[make] Done. See $(GEN_DIR)/sim_report.json"
 
 # ---------------------------------------------------------------------------
 # make manifest — end-of-run audit snapshot
@@ -213,6 +206,7 @@ check:
 	        -x "*_manifest.json" \
 	        -x "validation_report.json" \
 	        -x "lint_report.json" \
+	        -x "sim_report.json" \
 	        -x "sim" \
 	        $(GEN_DIR) $(CHECK_DIR) > /dev/null 2>&1; then \
 	    echo "[make] check PASSED — gen/ is up to date."; \
@@ -223,6 +217,7 @@ check:
 	        -x "*_manifest.json" \
 	        -x "validation_report.json" \
 	        -x "lint_report.json" \
+	        -x "sim_report.json" \
 	        -x "sim" \
 	        $(GEN_DIR) $(CHECK_DIR); \
 	    rm -rf $(CHECK_DIR); \
@@ -259,6 +254,7 @@ clean:
 	-rm -f  $(GEN_DIR)/*_manifest.json
 	-rm -f  $(GEN_DIR)/validation_report.json
 	-rm -f  $(GEN_DIR)/lint_report.json
+	-rm -f  $(GEN_DIR)/sim_report.json
 	-rm -rf $(GEN_DIR)/sim
 	-rm -rf $(CHECK_DIR)
 	@echo "[make] Clean complete."

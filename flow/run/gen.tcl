@@ -76,10 +76,11 @@ switch $output_type {
     "header"   { generate_header    }
     "docs"     { generate_docs      }
     "lint"     { lint_rtl           }
+    "sim"      { run_sim_tb         }
     "manifest" { generate_manifest  }
     "all"      { validate_spec; generate_rtl; generate_header; generate_docs }
     default    {
-        error "Unknown output type: $output_type. Use validate, rtl, header, docs, lint, manifest, or all."
+        error "Unknown output type: $output_type. Use validate, rtl, header, docs, lint, sim, manifest, or all."
     }
 }
 

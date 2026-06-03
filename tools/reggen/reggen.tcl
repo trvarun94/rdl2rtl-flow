@@ -178,6 +178,18 @@ proc lint_rtl {} {
     puts "\[reggen\] Lint complete."
 }
 
+proc run_sim_tb {} {
+    # LEARNING NOTE: run_sim_tb mirrors real EDA commands like `run_sim` in
+    # Cadence Xcelium or `vcs -R` in Synopsys VCS — it compiles the testbench
+    # and runs the simulation as a single delegated step. Python handles the
+    # two-step iverilog→vvp flow and writes gen/sim_report.json (PASS or FAIL)
+    # regardless of outcome. If $fatal fires in the testbench, the simulator
+    # exits non-zero, TCL's exec raises an error, and Make aborts.
+    puts "\[reggen\] Running functional simulation (iverilog + vvp)..."
+    _run_engine sim
+    puts "\[reggen\] Simulation complete."
+}
+
 proc generate_manifest {} {
     # LEARNING NOTE: generate_manifest mirrors EDA report commands like
     # `report_design` in Synopsys DC or `report_qor` in Cadence Innovus.

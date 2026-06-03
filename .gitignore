@@ -17,7 +17,16 @@ venv/
 # Temp outputs (consistency checker uses this)
 .tmp_gen/
 
-# gen/ is intentionally committed — it's the checked-in baseline for consistency gating
+# gen/ is intentionally committed — the deterministic spec→output artifacts
+# (rtl/, include/, docs/) are the checked-in baseline for consistency gating.
+# Run artifacts (manifest, lint/sim/validate reports, compiled sim binaries)
+# are environment-dependent and are NOT committed — CI/local runs regenerate
+# them fresh each time.
+gen/*_manifest.json
+gen/lint_report.json
+gen/sim_report.json
+gen/validation_report.json
+gen/sim/
 
 # Internal documentation
 CLAUDE.md

@@ -744,6 +744,101 @@ def generate_header(spec):
 
 
 # ---------------------------------------------------------------------------
+# Functional simulation (iverilog compile + vvp run)
+# ---------------------------------------------------------------------------
+
+def run_sim(spec, outdir, project_root):
+    """
+    Compile the testbench with iverilog and run it with vvp.
+    Writes gen/sim_report.json with PASS or FAIL in both outcomes.
+    Exits non-zero on failure so Make aborts.
+
+    FLOW CONCEPT — why sim after lint, not instead of it?
+    Lint (static analysis) catches structural RTL bugs without any stimulus.
+    Simulation (dynamic analysis) drives the RTL with actual APB transactions
+    and verifies it BEHAVES correctly. In a real flow you run both: lint gates
+    synthesis, simulation gates tape-out sign-off.
+
+    The two-step iverilog→vvp flow mirrors commercial tools:
+      iverilog compile  =  vlogan/xmvlog  (VCS/Xcelium compile step)
+      vvp run           =  vcs -R / xmsim (the actual simulation run)
+    $fatal in the testbench exits vvp non-zero; TCL's exec catches that and
+    propagates it as an error — Make aborts automatically.
+    """
+    for tool in ("iverilog", "vvp"):
+        if shutil.which(tool) is None:
+            print(f"[reggen] ERROR: '{tool}' not found on PATH.", file=sys.stderr)
+            print(f"[reggen] Install: brew install icarus-verilog  (macOS)", file=sys.stderr)
+            print(f"[reggen]          apt install iverilog          (Debian/Ubuntu)", file=sys.stderr)
+            sys.exit(1)
+
+    block   = spec["block"]
+    sv_path = os.path.join(outdir, "rtl", f"{block}.sv")
+    tb_path = os.path.join(project_root, "tb", f"{block}_tb.sv")
+    sim_dir = os.path.join(outdir, "sim")
+    sim_bin = os.path.join(sim_dir, f"{block}_sim")
+
+    for path, label in [(sv_path, "RTL"), (tb_path, "Testbench")]:
+        if not os.path.exists(path):
+            print(f"[reggen] ERROR: {label} file not found: {path}", file=sys.stderr)
+            sys.exit(1)
+
+    os.makedirs(sim_dir, exist_ok=True)
+
+    # Compile: iverilog turns .sv sources into a VVP bytecode executable.
+    compile_result = subprocess.run(
+        ["iverilog", "-g2012", "-o", sim_bin, tb_path, sv_path],
+        capture_output=True, text=True,
+    )
+    if compile_result.returncode != 0:
+        print("[reggen] Sim compile FAILED", file=sys.stderr)
+        if compile_result.stderr:
+            print(compile_result.stderr, file=sys.stderr)
+        _write_sim_report(outdir, block, "FAIL", compile_result, None)
+        sys.exit(1)
+
+    # Run: vvp executes the bytecode; $fatal inside the TB exits non-zero.
+    run_result = subprocess.run(["vvp", sim_bin], capture_output=True, text=True)
+
+    passed = run_result.returncode == 0
+    report_path = _write_sim_report(
+        outdir, block, "PASS" if passed else "FAIL", compile_result, run_result
+    )
+
+    if passed:
+        print(run_result.stdout.strip())
+        print(f"[reggen] Sim PASSED  → {report_path}")
+    else:
+        print(f"[reggen] Sim FAILED  → {report_path}", file=sys.stderr)
+        if run_result.stdout:
+            print(run_result.stdout, file=sys.stderr)
+        sys.exit(1)
+
+
+def _write_sim_report(outdir, block, status, compile_result, run_result):
+    """Write gen/sim_report.json and return its path."""
+    stdout = run_result.stdout.strip() if run_result else ""
+    # Count assertion checks: testbench prints "  PASS: ..." per passing check.
+    checks_passed = sum(1 for line in stdout.splitlines() if "PASS:" in line)
+
+    report = {
+        "tool": "iverilog/vvp",
+        "status": status,
+        "checks_passed": checks_passed,
+        "compile_exit_code": compile_result.returncode,
+        "run_exit_code": run_result.returncode if run_result else None,
+        "stdout": stdout,
+        "stderr": (compile_result.stderr.strip()
+                   + ("\n" + run_result.stderr.strip()
+                      if run_result and run_result.stderr else "")),
+    }
+    report_path = os.path.join(outdir, "sim_report.json")
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=2)
+    return report_path
+
+
+# ---------------------------------------------------------------------------
 # RTL lint (Verilator --lint-only)
 # ---------------------------------------------------------------------------
 
@@ -865,6 +960,17 @@ def scan_manifest(spec, outdir):
             "tool":   lint_report.get("tool"),
         }
 
+    # Include sim status if a sim report exists
+    sim_path = os.path.join(outdir, "sim_report.json")
+    if os.path.exists(sim_path):
+        with open(sim_path) as f:
+            sim_report = json.load(f)
+        manifest["sim"] = {
+            "status":        sim_report.get("status"),
+            "tool":          sim_report.get("tool"),
+            "checks_passed": sim_report.get("checks_passed"),
+        }
+
     manifest_path = os.path.join(outdir, f"{block}_manifest.json")
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
@@ -883,7 +989,7 @@ def main():
     parser.add_argument("--spec",   required=True, help="Path to register spec YAML")
     parser.add_argument("--outdir", required=True, help="Output directory root")
     parser.add_argument("--output", required=True,
-                        choices=["rtl", "header", "docs", "lint", "manifest", "all"],
+                        choices=["rtl", "header", "docs", "lint", "sim", "manifest", "all"],
                         help="What to generate")
     args = parser.parse_args()
 
@@ -915,6 +1021,11 @@ def main():
 
     if args.output == "lint":
         run_lint(spec, args.outdir)
+
+    if args.output == "sim":
+        # Derive the project root from the spec path (spec is at <root>/spec/<block>.yaml).
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(args.spec)))
+        run_sim(spec, args.outdir, project_root)
 
     if args.output == "manifest":
         scan_manifest(spec, args.outdir)
